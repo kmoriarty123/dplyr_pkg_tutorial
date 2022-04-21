@@ -1,0 +1,407 @@
+---
+title: "Code Clinic: dplyr"
+date: 7.Apr.2022
+desc: dplyr tutorial using OWID covid dataset
+author: Kathleen Moriarty
+---
+
+
+```{r setup, include=FALSE}
+
+rm(list=ls())
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, results="hold")
+knitr::opts_knit$set(root.dir = normalizePath("C:/Users/morika/Desktop/CodingResources/"))
+
+```
+
+
+```{r import, include=FALSE}
+
+# Libraries
+library(dplyr) # For python users, there are sister packages like dfply. 
+# More info found here: https://github.com/kieferk/dfply/blob/master/README.md
+
+library(data.table) # read .csv
+library(ggplot2)
+library(tidyr) # melting
+library(zoo) # rollapply
+
+# Data
+# OWID vaccination data found here: 
+# https://github.com/owid/covid-19-data/tree/master/public/data/vaccinations
+vax_data <- fread("data/vaccinations.csv") # downloaded 04.Apr.2022
+# OWID hospitalization data found here:
+# https://github.com/owid/covid-19-data/blob/master/public/data/hospitalizations/covid-hospitalizations.csv
+hosp_data <- fread("data/covid-hospitalizations.csv") # downloaded 04.Apr.2022
+# OWID country data found here: 
+# https://github.com/owid/covid-19-data/blob/master/public/data/owid-covid-data.csv
+cntry_data <- fread("data/owid-covid-data.csv") # downloaded 04.Apr.2022
+
+# Variables
+cntry_code = "CHE"
+cntry_code_list = c("UKR", "RUS", "CHE", "USA")
+
+```
+
+### Filtering & Selecting (also grepl from base, everything()) 
+
+```{r filter and select, results = FALSE}
+
+# dplyr + piping code block
+vax_data %>% 
+  filter(iso_code == cntry_code, 
+         !is.na(total_vaccinations)) %>%
+  select(date, total_vaccinations)
+
+# Similar to pipes in other languages. cmd line: | python dfply pkg: >> 
+
+# Same results as above but with base R
+vax_data[which(vax_data$iso_code == cntry_code & 
+                 !is.na(vax_data$total_vaccinations)),
+         c('date', 'total_vaccinations')]
+
+# dplyr without %>%
+tmp1 <- filter(vax_data, iso_code == cntry_code, !is.na(total_vaccinations))
+tmp2 <- select(tmp1, date, total_vaccinations)
+
+# base r is annoying with deselect (first grab column #...)
+vax_data %>% 
+  filter(iso_code == cntry_code, 
+         !is.na(total_vaccinations)) %>%
+  select(-c(daily_vaccinations_raw, total_boosters))
+
+vax_data %>%  
+  filter(iso_code == cntry_code, 
+         !is.na(total_vaccinations), 
+         !is.na(total_boosters)) %>%
+  select(contains("booster"))
+# other options: starts_with, ends_with, etc.
+
+# reorder columns, everything() function
+vax_data %>% 
+  filter(iso_code == cntry_code, !is.na(total_vaccinations)) %>%
+  select(location, date, total_vaccinations_per_hundred, everything())
+
+# filter based on substring in a character column (different regex commands)
+vax_data %>% 
+  filter(grepl("lao", location, ignore.case = TRUE))
+vax_data %>% 
+  filter(grepl("[Ll]ao", location)) # match on either L or l
+vax_data %>% 
+  filter(grepl("^lao", location, ignore.case = TRUE)) # match on the beginning only
+# other options str_detect from stringr or ...
+
+# %in% option
+vax_data %>% 
+  filter(iso_code %in% cntry_code_list) 
+
+# For "not in" options:
+vax_data %>% 
+  filter(!iso_code %in% cntry_code_list) 
+# OR, you can write your own function
+`%notin%` <- Negate(`%in%`)
+vax_data %>% 
+  filter(iso_code %notin% cntry_code_list) 
+
+# remove unneeded columns for later use
+vax_data <- vax_data %>%
+  select(-c(daily_vaccinations_raw, location))
+
+# Another option to streamline column selection dynamically, create variable of column names and then all_of() family of functions. This allows you to reference a column name as a variable name and not as the name itself
+cols <- c('total_vaccinations', 'people_vaccinated')
+vax_data %>% 
+  select(all_of(cols))
+
+# Similiar to ggplot, aes_string when x and y values are varying/dynamic names
+
+
+```
+
+
+### Melt dataframes (pivot_longer and pivot_wider from tidyr)
+
+```{r}
+
+# covid hospital data is long. to make wide use pivot_wider from tidyr
+hosp_data_wide <-  hosp_data %>% 
+  pivot_wider(!entity, 
+              names_from = indicator,
+              values_from = value,
+              values_fill = NA)
+# can pivot_wider on multiple names_from / values_from variables
+# can control naming of new columns 
+
+# pivot_longer to do the inverse
+
+# Original option: melt and spread (or decast)? from reshape2 pkg 
+# newer options are these functions
+?pivot_wider
+?pivot_longer
+```
+
+### Group_by(), distinct() and ungroup()
+
+```{r}
+
+# Prepare cntry_data dataframe
+cntry_data <- cntry_data %>% 
+  select(iso_code:location, 
+         population:human_development_index) %>%
+  distinct()
+  
+# Check to confirm that there are not multiple rows of iso_codes
+tmp1 <- cntry_data %>% 
+  group_by(iso_code) %>% 
+  count(name='n') %>% # counts number of rows with same iso_code. 'name' can be omitted.
+  filter(n > 1) %>% 
+  ungroup()
+
+# can also use summarize(n = n()). More with summarizing below
+  
+```
+
+### Merging DFs (also rename())
+
+```{r}
+
+# merge hospital, vax, and cntry datasets by country (and date)
+
+vax_hosp_cntry_data <- vax_data %>% 
+  full_join(hosp_data_wide, by=c('iso_code','date')) %>%
+  left_join(cntry_data, by=c('iso_code')) %>%
+  rename(hdi = human_development_index,
+         daily_icu = `Daily ICU occupancy`) %>%
+  filter(!grepl("OWID_", iso_code, ignore.case = TRUE))
+
+# if col names don't match can be indicated in by parameter
+# Ex. by=c('iso_code' = 'cntry_code', 'date' = 'event_date')
+# Also right_join, semi_join, anti_join, ...
+
+# You can also rename inside of select function:
+# select(hdi = human_development_index,
+#        daily_icu = `Daily ICU occupancy`, ...)
+
+
+```
+
+### Mutate: ifelse, case_when, slice_max
+
+```{r}
+
+# Which countries have distributed boosters already?
+booster_data <- vax_hosp_cntry_data %>% 
+  group_by(iso_code) %>% 
+  slice_max(date, n=1) %>% 
+  mutate(boosters = ifelse(is.na(total_boosters), FALSE, TRUE)) %>% 
+  ungroup()
+# also slice_min, slice_head, slice_sample, 
+# slice family of functions has with_ties parameters and order_by ...
+# tidyr::replace_na(): can replace all na values in a column
+
+# plot life expect by boostering status
+ggplot(booster_data, aes(x=boosters, y=life_expectancy)) +
+  geom_violin()
+
+# calculate quantiles of hdi
+quantiles = unname(quantile(cntry_data$human_development_index, na.rm = TRUE))
+
+# Split the HDI into 4 groups based on quantiles
+hdi_grp_data <- vax_hosp_cntry_data %>% 
+  mutate(hdi_qt = case_when(hdi < quantiles[2] ~ 'low',
+                            hdi >= quantiles[2] & hdi < quantiles[3] ~ 'med-low',
+                            hdi >= quantiles[3] & hdi < quantiles[4] ~ 'med-high',
+                            hdi >= quantiles[4] ~ 'high',
+                            is.na(hdi) ~ 'unknown'))
+
+# Use condition: TRUE ~ 'all_else' for cases that don't match any of the previous cases
+# also possible with: cut() and breaks() functions
+
+# plot time series people fully vaxed and hdi level
+ggplot(hdi_grp_data, 
+       aes(x=date, y=people_fully_vaccinated_per_hundred, color=hdi_qt)) +
+  geom_point()
+
+
+```
+
+### Summarizing, slicing functions, across
+
+```{r }
+
+# To summarize the previous hdi levels and calculate the mean per level:
+hdi_grp_data_sum <- hdi_grp_data %>% 
+  rename(peep_full_vaxed = people_fully_vaccinated_per_hundred) %>% 
+  mutate(peep_full_vaxed = ifelse(is.na(peep_full_vaxed), 0, peep_full_vaxed)) %>% 
+  group_by(hdi_qt, date) %>% 
+  summarize(mean_fully_vaxed = mean(peep_full_vaxed, na.rm = TRUE)) %>% 
+  ungroup() 
+  
+ggplot(hdi_grp_data_sum, 
+       aes(x=date, y=week_ave_fully_vaxed, color=hdi_qt)) +
+  geom_point()
+
+# Another situation:
+# What is the proportion of days with daily hospital occupancy (for covid) over 50%?
+hosp_bed_deet <- vax_hosp_cntry_data %>% 
+  mutate(tot_hosp_beds = (hospital_beds_per_thousand) * (population/1000)) %>%
+  mutate(prop_hosp_beds_used = (`Daily hospital occupancy` + daily_icu)/tot_hosp_beds) %>% 
+  group_by(iso_code, location) %>%
+  summarize(num_days=n(), 
+            days_over_20 = sum(prop_hosp_beds_used>=.2, na.rm = TRUE),
+            prop_days_over_20 = days_over_20/num_days) %>%
+  ungroup()
+
+# to keep all columns in a grouping process, you can:
+# add across() as parameter of summarize
+# .group parameter gives options too
+
+hosp_bed_deet_lim <- hosp_bed_deet %>%
+  filter(prop_days_over_20 > 0)
+
+ggplot(hosp_bed_deet_lim, aes(x=prop_days_over_20, y=location, fill = iso_code)) +
+         geom_col()
+
+# Instead of group_by + summarize, you can use group_by + mutate which does not "squash" your data and keeps the same number of rows as before, with the summarized variable added
+
+# summarize daily values to obtain totals (assume we don't have cumulative values already)
+vax_data %>% 
+  group_by(iso_code) %>% 
+  summarize(tot_peep_vax = sum(daily_people_vaccinated, na.rm = TRUE),
+            tot_peep_full_vax = sum(daily_vaccinations, na.rm = TRUE),
+            tot_peep_vax_100 = sum(daily_people_vaccinated_per_hundred, na.rm = TRUE)) %>% 
+  ungroup()
+
+# more efficient way using across()
+#.names parameter gives flexibility for column naming
+vax_data %>% 
+  group_by(iso_code) %>% 
+  summarize(across(starts_with('daily'), # column
+                   ~ sum(.x, na.rm = TRUE), # list
+                   .names = "tot_{.col}")) %>%
+  ungroup()
+# 1st parameter of across can take list, range, "where"...
+# Ex. summarize(across(where(is.numeric), mean)
+# 2nd paramter of across can take any function (list of functions, lambda functions)
+# Ex. summarize(across(everything(), list(mean = mean, sd = sd)))
+
+# Select the row with maximum daily vaccination rate by country
+max_vax  <- vax_data %>% 
+  group_by(iso_code) %>%
+  summarize(daily_vaccinations_per_million = max(daily_vaccinations_per_million, 
+                                                 na.rm = TRUE)) %>% 
+  ungroup()
+
+# Results above only give sum values
+# Select the slice_max: takes subset of the n rows with max value
+max_vax_date  <- vax_data %>% 
+  group_by(iso_code) %>%
+  slice_max(daily_vaccinations_per_million, n=1) %>% 
+  ungroup()
+
+# Results from above show multiple dates when there was the maximum
+# Select the slice_max then the min date for first occurence
+max_vax_min_date  <- vax_data %>% 
+  group_by(iso_code) %>%
+  slice_max(daily_vaccinations_per_million, n=1) %>%
+  ungroup() %>% 
+  group_by(iso_code) %>%
+  slice_min(date, n=1) %>%
+  ungroup()
+           
+# Plot time series max vaccination per million at earliest date
+ggplot(max_vax_min_date, aes(x=date, 
+                             y=daily_vaccinations_per_million, 
+                             color=iso_code, 
+                             label = iso_code)) +
+  geom_point() +
+  theme(legend.position="none") +
+  geom_text(check_overlap = TRUE, hjust = 0, nudge_x = 2)
+
+```
+
+### Rowwise
+
+```{r}
+# Rowwise instead of column wise summary
+# Mean # of smokers -- difficult to come up with a meaningful example of rowwise summary with this particular dataset
+smokers <- vax_hosp_cntry_data %>%
+  rowwise() %>% 
+  summarize(mean_smokers = mean(c(female_smokers, male_smokers), na.rm = TRUE)) %>%
+  ungroup()
+
+# Use c_across with rowwise to select multiple columns (similar to across() mentioned above)
+# rowSums is faster - built-in function that doesn't require rowwise()
+
+```
+
+### Lag / lead / rollapply (and arrange)
+
+```{r}
+# For cntry_code, what is trend of daily icu occupancy values
+change_icu_data <- vax_hosp_cntry_data %>%
+  filter(iso_code == cntry_code) %>%
+  arrange(date) %>% # or, order_by parameter in lag function
+  mutate(prev_day_icu = lag(daily_icu, n=1)) %>%
+  mutate(diff_icu = daily_icu - prev_day_icu)
+
+ggplot(change_icu_data, aes(x=date, y=diff_icu)) +
+  geom_point()
+
+# Above is not a clear picture - need a rolling average
+# For cntry_code, what is 7 day rolling average of icu occupancy
+change_icu_data_ave <- vax_hosp_cntry_data %>%
+  filter(iso_code == cntry_code) %>%
+  arrange(date) %>% # or, order_by parameter in lag function
+  mutate(prev_week_icu_ave = rollapply(daily_icu, 7, mean, fill = NA, align = "right"))
+
+ggplot(change_icu_data_ave, aes(x=date, y=prev_week_icu_ave)) +
+  geom_point()
+
+
+# Fill function is also option to fill missing values in selected columns using the next or previous entry.
+
+```
+
+### Miscellaneous
+
+
+```{r}
+
+# Add a row
+# vaccine_data_plus <- vax_data %>% 
+#  add_row(iso_code = "MWW", continent = "Mars", location = "Virgo", ...)
+# Only use this for an occasional adding of rows. 
+# It is extremely slow to "grow" a dataframe
+
+# head()
+# tail()
+
+# extract(): to split columns that contain different data that you want to split into multiple columns:
+#dataframe %>% 
+#   extract(col_name, 
+#     into = c('col1', 'col2'),
+#     regex = "^([^\\s]+) (.*)$"
+#   )
+# inverse option is the unit function
+
+
+```
+
+
+### Plotting and output to table
+
+```{r}
+
+# add ggplot (or kableextra or ... to the pipes)
+
+# Interest to see change in reporting / vax rates pre-post Russian invasion
+vax_data %>% 
+  filter(iso_code %in% cntry_code_list) %>%
+  ggplot(aes(x=date, y=daily_people_vaccinated_per_hundred, color=iso_code)) +
+    geom_line() +
+    geom_vline(xintercept = as.Date('2022-02-24'))
+
+# Better to keep the functionality of data manipulation separate from plotting and table creation, except for rare occasion as an example of plotting some filtered dataframe
+
+```
+
